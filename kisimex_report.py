@@ -25,7 +25,7 @@ ISOLAR_PASS      = os.environ["ISOLAR_PASS"]
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-REPORT_TIME = "10:00"   # 17:00 UTC+7 = 10:00 UTC
+REPORT_TIME = "11:00"   # 18:00 UTC+7 = 11:00 UTC
 
 PLANTS = [
     {"name": "KHO BAO BÌ",    "capacity": 442.00},
