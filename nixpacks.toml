@@ -2,7 +2,7 @@
 nixPkgs = ["python3", "chromium", "nss", "nspr", "atk", "cups", "dbus", "expat", "libdrm", "xorg.libxcb", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "mesa", "pango", "cairo", "alsa-lib"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt", "playwright install chromium"]
+cmds = ["python3 -m pip install -r requirements.txt", "python3 -m playwright install chromium"]
 
 [start]
-cmd = "python kisimex_report.py"
+cmd = "python3 kisimex_report.py"
