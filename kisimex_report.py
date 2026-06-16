@@ -265,7 +265,7 @@ if __name__ == "__main__":
     print(f"⏰ Lịch gửi: {REPORT_TIME} UTC (= 17:00 VN) mỗi ngày")
 
     # Test ngay — bỏ comment dòng dưới:
-    run_report()
+        # run_report()
 
     schedule.every().day.at(REPORT_TIME).do(run_report)
 
