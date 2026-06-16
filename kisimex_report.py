@@ -1,8 +1,8 @@
 """
 iSolarCloud KISIMEX Daily Report Bot
 - Tự động login web3.isolarcloud.com.hk bằng Playwright
-- Lấy dữ liệu từ BẢNG DANH SÁCH nhà máy (nhanh hơn, 1 trang duy nhất)
-- Cột: "Yield today" / "Sản Lượng điện trong ngày" + "Equivalent hours" / "Giờ tương đương"
+- Lấy dữ liệu từ BẢNG DANH SÁCH nhà máy (1 trang duy nhất)
+- Cột: "Yield today" (MWh → đổi ra kWh) + "Equivalent hours"
 - Gửi Telegram lúc 17:00 VN hàng ngày; hỗ trợ lệnh /baocao
 
 Biến môi trường (Railway):
@@ -104,8 +104,8 @@ def login_isolar():
 def get_all_plant_data(page) -> list:
     """
     Scrape bảng danh sách nhà máy — lấy cột:
-      - 'Yield today' / 'Sản Lượng điện trong ngày' (kWh)
-      - 'Equivalent hours' / 'Giờ tương đương' (h)
+      - 'Yield today' (MWh, sẽ đổi sang kWh)
+      - 'Equivalent hours'
     """
     print("📡 Đang mở trang danh sách nhà máy...")
     page.goto(PLANT_LIST_URL, timeout=60000)
@@ -119,7 +119,6 @@ def get_all_plant_data(page) -> list:
         let prodIdx = -1, hourIdx = -1, nameIdx = 0;
         headerTexts.forEach((txt, i) => {
             const t = txt.toLowerCase();
-            // Hỗ trợ cả tiếng Anh và tiếng Việt
             if (t.includes('yield today') || t.includes('daily yield') || t.includes('today')
                 || t.includes('sản lượng') || t.includes('trong ngày'))
                 prodIdx = i;
@@ -154,21 +153,45 @@ def get_all_plant_data(page) -> list:
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
-def parse_vn_number(s: str):
-    """'1,234.56 kWh' hoặc '1,76 Giờ' hoặc '778.10' → float."""
+def parse_number(s: str):
+    """Parse số từ chuỗi, bỏ dấu phân cách, trả về float."""
     if not s or s.strip() in ("--", "N/A", ""):
         return None
-    clean = s.split()[0] if s.split() else s
-    # Thử parse trực tiếp (1234.56)
+    # Lấy phần số đầu tiên (bỏ đơn vị phía sau)
+    token = s.strip().split()[0]
+    # Thử format quốc tế (1,234.56 hoặc 1234.56)
     try:
-        return float(clean.replace(",", ""))
+        return float(token.replace(",", ""))
     except ValueError:
         pass
-    # VN format: 1.234,56
+    # Thử format VN (1.234,56)
     try:
-        return float(clean.replace(".", "").replace(",", "."))
+        return float(token.replace(".", "").replace(",", "."))
     except ValueError:
         return None
+
+
+def parse_production_kwh(s: str):
+    """
+    Parse sản lượng, tự động đổi MWh → kWh nếu cần.
+    iSolarCloud plant list hiển thị 'Yield today' theo đơn vị MWh.
+    """
+    if not s or s.strip() in ("--", "N/A", ""):
+        return None
+    parts = s.strip().split()
+    val = parse_number(parts[0])
+    if val is None:
+        return None
+    unit = parts[1].lower() if len(parts) > 1 else ""
+    if "mwh" in unit:
+        val = val * 1000   # MWh → kWh
+    # Nếu không có đơn vị hoặc đã là kWh, giữ nguyên
+    return val
+
+
+def parse_hours(s: str):
+    """Parse giờ tương đương."""
+    return parse_number(s)
 
 
 def find_row_for_plant(rows: list, plant_name: str):
@@ -201,34 +224,26 @@ def format_report(results: list) -> str:
     ]
 
     for i, (plant, data) in enumerate(results):
-        kwh     = parse_vn_number(data.get("production"))
-        gio_raw = parse_vn_number(data.get("hours"))
-        cap     = plant["capacity"]
+        kwh = parse_production_kwh(data.get("production"))
+        gio = parse_hours(data.get("hours"))
+        cap = plant["capacity"]
+
+        prod_str = f"{kwh:,.2f} kWh" if kwh is not None else "N/A"
+        gio_str  = f"{gio:.2f} h"    if gio is not None else "N/A"
 
         if kwh is not None:
             total_kwh += kwh
-            prod_str = f"{kwh:,.0f} kWh"
-        else:
-            prod_str = "N/A"
-
-        if gio_raw is not None:
-            gio_str = f"{gio_raw:.2f} h"
-            nhan_xet = "Bức xạ tốt, sản lượng đạt kỳ vọng." if gio_raw >= 3.68 else "Bức xạ kém, sản lượng không đạt kỳ vọng."
-        else:
-            gio_str  = "N/A"
-            nhan_xet = "Không có dữ liệu." if kwh is None else "Không rõ giờ nắng."
 
         lines += [
             f"{emojis[i]} {plant['name']} ({cap:,.2f} kWp)",
-            f"  ⚡ Sản lượng          : {prod_str}",
-            f"  ☀️ Giờ tương đương   : {gio_str}",
-            f"  📋 Nhận xét          : {nhan_xet}",
+            f"  ⚡ Sản lượng         : {prod_str}",
+            f"  ☀️ Giờ tương đương  : {gio_str}",
             "",
         ]
 
     lines += [
         "━" * 23,
-        f"📊 Tổng sản lượng    : {total_kwh:,.0f} kWh",
+        f"📊 Tổng sản lượng    : {total_kwh:,.2f} kWh",
         f"   Công suất lắp đặt : 1,100.40 kWp",
         "",
         "Trân trọng.",
