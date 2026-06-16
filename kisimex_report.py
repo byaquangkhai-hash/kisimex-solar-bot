@@ -13,11 +13,12 @@ Biến môi trường (Railway):
 
 import os
 import time
+import threading
 import schedule
 import requests
 from datetime import datetime, timezone, timedelta
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
+# ─── CONFIG ──────────────────────────────────────────────────────────────────────────────
 ISOLAR_USER      = os.environ["ISOLAR_USER"]
 ISOLAR_PASS      = os.environ["ISOLAR_PASS"]
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -47,7 +48,7 @@ PLANTS = [
         ),
     },
     {
-        "name": "TẮC CẬU",
+        "name": "TẮC C᪪u",
         "capacity": 360.00,
         "url": (
             "https://web3.isolarcloud.com.hk/#/plantDetail/overView?"
@@ -61,7 +62,7 @@ PLANTS = [
 WEEKDAYS = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
 
 
-# ─── LOGIN ────────────────────────────────────────────────────────────────────
+# ─── LOGIN ────────────────────────────────────────────────────────────────────────────────
 def login_isolar():
     from playwright.sync_api import sync_playwright
 
@@ -82,7 +83,6 @@ def login_isolar():
     page.wait_for_load_state("networkidle", timeout=30000)
     time.sleep(3)
 
-    # Điền username
     user_selectors = [
         'input[name="account"]',
         'input[placeholder*="account" i]',
@@ -99,12 +99,9 @@ def login_isolar():
             continue
 
     time.sleep(0.5)
-
-    # Điền password
     page.fill('input[type="password"]:visible', ISOLAR_PASS)
     time.sleep(0.5)
 
-    # Click đăng nhập
     login_selectors = [
         'button[type="submit"]',
         '.login-btn',
@@ -121,7 +118,6 @@ def login_isolar():
         except Exception:
             continue
 
-    # Chờ dashboard load
     page.wait_for_url("**/#/**", timeout=30000)
     time.sleep(4)
     print("✅ Đăng nhập thành công!")
@@ -129,7 +125,7 @@ def login_isolar():
     return p, browser, page
 
 
-# ─── SCRAPE DOM ───────────────────────────────────────────────────────────────
+# ─── SCRAPE DOM ─────────────────────────────────────────────────────────────────────────
 def get_plant_data(page, plant: dict) -> dict:
     """Điều hướng đến trang nhà máy và lấy dữ liệu từ DOM."""
     print(f"📡 Đang lấy dữ liệu {plant['name']}...")
@@ -140,17 +136,24 @@ def get_plant_data(page, plant: dict) -> dict:
     data = page.evaluate("""() => {
         const pts = Array.from(document.querySelectorAll('span.overview-point-value'))
                         .map(el => el.textContent.trim());
-        const prod = document.querySelector('span.item-value')?.textContent?.trim();
-        return { capacity: pts[1] || null, production: prod || null };
+        const itemVals = Array.from(document.querySelectorAll('span.item-value'))
+                        .map(el => el.textContent.trim());
+        return { pts: pts, itemVals: itemVals };
     }""")
 
-    print(f"   → production={data.get('production')}, capacity={data.get('capacity')}")
-    return data
+    pts = data.get("pts", [])
+    item_vals = data.get("itemVals", [])
+    print(f"   → pts={pts}")
+    print(f"   → itemVals={item_vals}")
+
+    # pts[0] thường là sản lượng hôm nay (kWh)
+    production = pts[0] if pts else (item_vals[0] if item_vals else None)
+    return {"production": production}
 
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
+# ─── HELPERS ─────────────────────────────────────────────────────────────────────────────
 def parse_vn_number(s: str):
-    """Chuyển số định dạng VN ('1.234,56') sang float."""
+    """Đổi số định dạng VN ('1.234,56') sang float."""
     if not s or s.strip() in ("--", "N/A", ""):
         return None
     try:
@@ -159,7 +162,7 @@ def parse_vn_number(s: str):
         return None
 
 
-# ─── FORMAT ──────────────────────────────────────────────────────────────────
+# ─── FORMAT ──────────────────────────────────────────────────────────────────────────────
 def format_report(results: list) -> str:
     tz_vn = timezone(timedelta(hours=7))
     now = datetime.now(tz_vn)
@@ -167,15 +170,15 @@ def format_report(results: list) -> str:
     date_str = now.strftime("%d/%m/%Y")
 
     emojis = ["1️⃣", "2️⃣", "3️⃣"]
-    total_mwh = 0.0
+    total_kwh = 0.0
 
     lines = [
         "🌟 BÁO CÁO VẬN HÀNH SOLAR - KISIMEX",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        f"🏭 Hệ thống  : KISIMEX - Kiên Giang",
-        f"📅 Ngày      : {thu}, {date_str}",
-        f"⏰ Cập nhật  : 17:00",
-        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "━" * 23,
+        f"Hệ thống  : KISIMEX - Kiên Giang",
+        f"Ngày      : {thu}, {date_str}",
+        f"Cập nhật  : 17:00",
+        "━" * 23,
     ]
 
     for i, (plant, data) in enumerate(results):
@@ -183,14 +186,13 @@ def format_report(results: list) -> str:
         cap = plant["capacity"]
 
         if kwh is not None:
-            mwh = kwh / 1000
             gio_nang = round(kwh / cap, 2)
-            total_mwh += mwh
+            total_kwh += kwh
             if gio_nang >= 3.68:
                 nhan_xet = "Bức xạ tốt, sản lượng đạt kỳ vọng."
             else:
                 nhan_xet = "Bức xạ kém, sản lượng không đạt kỳ vọng."
-            prod_str = f"{mwh:.2f} MWh"
+            prod_str = f"{kwh:,.0f} kWh"
             gio_str  = f"{gio_nang:.2f} h"
         else:
             prod_str = "N/A"
@@ -206,8 +208,8 @@ def format_report(results: list) -> str:
         ]
 
     lines += [
-        "━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📊 Tổng sản lượng    : {total_mwh:.2f} MWh",
+        "━" * 23,
+        f"📊 Tổng sản lượng    : {total_kwh:,.0f} kWh",
         f"   Công suất lắp đặt : 1,100.40 kWp",
         "",
         "Trân trọng.",
@@ -216,7 +218,7 @@ def format_report(results: list) -> str:
     return "\n".join(lines)
 
 
-# ─── TELEGRAM ─────────────────────────────────────────────────────────────────
+# ─── TELEGRAM ─────────────────────────────────────────────────────────────────────────────────
 def send_telegram(message: str) -> bool:
     url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=10)
@@ -225,7 +227,38 @@ def send_telegram(message: str) -> bool:
     return ok
 
 
-# ─── JOB ─────────────────────────────────────────────────────────────────────
+# ─── TELEGRAM COMMAND LISTENER ─────────────────────────────────────────────────────────────────────────────
+def telegram_poll():
+    """Đang poll Telegram API, xử lý lệnh /baocao."""
+    offset = 0
+    print("📩 Telegram command listener khởi động (/baocao)")
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            resp = requests.get(url, params={"offset": offset, "timeout": 30}, timeout=35)
+            if resp.status_code != 200:
+                time.sleep(5)
+                continue
+            updates = resp.json().get("result", [])
+            for update in updates:
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                text = (msg.get("text") or "").strip().lower()
+                if text.startswith("/baocao"):
+                    chat_id = msg.get("chat", {}).get("id")
+                    print(f"📩 Lệnh /baocao từ chat_id={chat_id}")
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        json={"chat_id": TELEGRAM_CHAT_ID, "text": "⏳ Đang lấy dữ liệu, vui lòng chờ..."},
+                        timeout=10,
+                    )
+                    threading.Thread(target=run_report, daemon=True).start()
+        except Exception as e:
+            print(f"⚠️ Telegram poll lỗi: {e}")
+            time.sleep(5)
+
+
+# ─── JOB ──────────────────────────────────────────────────────────────────────────────────────
 def run_report():
     tz_vn = timezone(timedelta(hours=7))
     print(f"\n{'='*50}")
@@ -259,13 +292,17 @@ def run_report():
             p.stop()
 
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
+# ─── MAIN ───────────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("🤖 KISIMEX Report Bot khởi động")
     print(f"⏰ Lịch gửi: {REPORT_TIME} UTC (= 17:00 VN) mỗi ngày")
+    print("📩 Lệnh Telegram: /baocao")
+
+    # Khởi động Telegram command listener trong background thread
+    threading.Thread(target=telegram_poll, daemon=True).start()
 
     # Test ngay — bỏ comment dòng dưới:
-        # run_report()
+    # run_report()
 
     schedule.every().day.at(REPORT_TIME).do(run_report)
 
