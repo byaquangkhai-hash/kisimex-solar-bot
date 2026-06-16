@@ -2,7 +2,7 @@
 iSolarCloud KISIMEX Daily Report Bot
 - Tự động login web3.isolarcloud.com.hk bằng Playwright
 - Lấy dữ liệu từ BẢNG DANH SÁCH nhà máy (nhanh hơn, 1 trang duy nhất)
-- Cột: "Sản Lượng điện trong ngày" (kWh) + "Giờ tương đương"
+- Cột: "Yield today" / "Sản Lượng điện trong ngày" + "Equivalent hours" / "Giờ tương đương"
 - Gửi Telegram lúc 17:00 VN hàng ngày; hỗ trợ lệnh /baocao
 
 Biến môi trường (Railway):
@@ -27,7 +27,6 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 REPORT_TIME = "10:00"   # 17:00 UTC+7 = 10:00 UTC
 
-# Chỉ cần tên + công suất; URL scrape từ bảng danh sách chung
 PLANTS = [
     {"name": "KHO BAO BÌ",    "capacity": 442.00},
     {"name": "KHU VĂN PHÒNG", "capacity": 298.40},
@@ -36,7 +35,6 @@ PLANTS = [
 
 WEEKDAYS = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
 
-# URL trang danh sách nhà máy
 PLANT_LIST_URL = "https://web3.isolarcloud.com.hk/#/plantList"
 
 
@@ -61,7 +59,6 @@ def login_isolar():
     page.wait_for_load_state("networkidle", timeout=30000)
     time.sleep(3)
 
-    # Điền username
     user_selectors = [
         'input[name="account"]',
         'input[placeholder*="account" i]',
@@ -107,9 +104,8 @@ def login_isolar():
 def get_all_plant_data(page) -> list:
     """
     Scrape bảng danh sách nhà máy — lấy cột:
-      - 'Sản Lượng điện trong ngày' (kWh)
-      - 'Giờ tương đương' (h)
-    Trả về list[dict]: name, production, hours
+      - 'Yield today' / 'Sản Lượng điện trong ngày' (kWh)
+      - 'Equivalent hours' / 'Giờ tương đương' (h)
     """
     print("📡 Đang mở trang danh sách nhà máy...")
     page.goto(PLANT_LIST_URL, timeout=60000)
@@ -117,54 +113,58 @@ def get_all_plant_data(page) -> list:
     time.sleep(5)
 
     result = page.evaluate("""() => {
-        // Tìm tất cả header
         const ths = Array.from(document.querySelectorAll('th'));
         const headerTexts = ths.map(th => th.innerText.trim());
 
-        // Tìm index cột sản lượng và giờ
         let prodIdx = -1, hourIdx = -1, nameIdx = 0;
         headerTexts.forEach((txt, i) => {
             const t = txt.toLowerCase();
-            if (t.includes('sản lượng') || t.includes('kwh') || t.includes('trong ngày'))
+            // Hỗ trợ cả tiếng Anh và tiếng Việt
+            if (t.includes('yield today') || t.includes('daily yield') || t.includes('today')
+                || t.includes('sản lượng') || t.includes('trong ngày'))
                 prodIdx = i;
-            if (t.includes('giờ') || t.includes('tương đương'))
+            if (t.includes('equivalent') || t.includes('peak hour')
+                || t.includes('giờ') || t.includes('tương đương'))
                 hourIdx = i;
         });
 
-        // Lấy dữ liệu từng hàng
         const rows = Array.from(document.querySelectorAll('tbody tr')).map(tr => {
             const cells = Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim());
             return {
                 name:       cells[nameIdx] || '',
                 production: prodIdx >= 0 ? cells[prodIdx] : null,
                 hours:      hourIdx >= 0 ? cells[hourIdx] : null,
-                all_cells:  cells,
             };
         });
 
         return { headers: headerTexts, prodIdx, hourIdx, rows };
     }""")
 
-    headers   = result.get("headers", [])
-    prod_idx  = result.get("prodIdx", -1)
-    hour_idx  = result.get("hourIdx", -1)
-    rows      = result.get("rows", [])
+    headers  = result.get("headers", [])
+    prod_idx = result.get("prodIdx", -1)
+    hour_idx = result.get("hourIdx", -1)
+    rows     = result.get("rows", [])
 
     print(f"   → headers={headers}")
-    print(f"   → prodIdx={prod_idx}, hourIdx={hour_idx}")
+    print(f"   → prodIdx={prod_idx} ('{headers[prod_idx] if prod_idx >= 0 else 'N/F'}'), hourIdx={hour_idx} ('{headers[hour_idx] if hour_idx >= 0 else 'N/F'}')")
     for r in rows:
-        print(f"   → row name='{r.get('name')}' | prod='{r.get('production')}' | hours='{r.get('hours')}'")
+        print(f"   → '{r.get('name','')[:40]}' | prod='{r.get('production')}' | hours='{r.get('hours')}'")
 
     return rows
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 def parse_vn_number(s: str):
-    """'1.234,56' hoặc '1,76 Giờ' → float."""
+    """'1,234.56 kWh' hoặc '1,76 Giờ' hoặc '778.10' → float."""
     if not s or s.strip() in ("--", "N/A", ""):
         return None
-    # Bỏ đơn vị chữ (kWh, Giờ, giờ, ...)
     clean = s.split()[0] if s.split() else s
+    # Thử parse trực tiếp (1234.56)
+    try:
+        return float(clean.replace(",", ""))
+    except ValueError:
+        pass
+    # VN format: 1.234,56
     try:
         return float(clean.replace(".", "").replace(",", "."))
     except ValueError:
@@ -172,11 +172,9 @@ def parse_vn_number(s: str):
 
 
 def find_row_for_plant(rows: list, plant_name: str):
-    """Tìm hàng trong bảng khớp với tên nhà máy (so sánh không phân biệt chữ hoa)."""
     name_upper = plant_name.upper()
     for row in rows:
         row_name = (row.get("name") or "").upper()
-        # Khớp nếu tên chứa từ khóa chính
         keywords = [w for w in name_upper.split() if len(w) > 2]
         if any(kw in row_name for kw in keywords):
             return row
@@ -203,9 +201,9 @@ def format_report(results: list) -> str:
     ]
 
     for i, (plant, data) in enumerate(results):
-        kwh      = parse_vn_number(data.get("production"))
-        gio_raw  = parse_vn_number(data.get("hours"))
-        cap      = plant["capacity"]
+        kwh     = parse_vn_number(data.get("production"))
+        gio_raw = parse_vn_number(data.get("hours"))
+        cap     = plant["capacity"]
 
         if kwh is not None:
             total_kwh += kwh
@@ -215,19 +213,16 @@ def format_report(results: list) -> str:
 
         if gio_raw is not None:
             gio_str = f"{gio_raw:.2f} h"
-            if gio_raw >= 3.68:
-                nhan_xet = "Bức xạ tốt, sản lượng đạt kỳ vọng."
-            else:
-                nhan_xet = "Bức xạ kém, sản lượng không đạt kỳ vọng."
+            nhan_xet = "Bức xạ tốt, sản lượng đạt kỳ vọng." if gio_raw >= 3.68 else "Bức xạ kém, sản lượng không đạt kỳ vọng."
         else:
             gio_str  = "N/A"
             nhan_xet = "Không có dữ liệu." if kwh is None else "Không rõ giờ nắng."
 
         lines += [
             f"{emojis[i]} {plant['name']} ({cap:,.2f} kWp)",
-            f"  ⚡ Sản lượng : {prod_str}",
-            f"  ☀️ Giờ tương đương : {gio_str}",
-            f"  📋 Nhận xét  : {nhan_xet}",
+            f"  ⚡ Sản lượng          : {prod_str}",
+            f"  ☀️ Giờ tương đương   : {gio_str}",
+            f"  📋 Nhận xét          : {nhan_xet}",
             "",
         ]
 
@@ -253,7 +248,6 @@ def send_telegram(message: str) -> bool:
 
 # ─── TELEGRAM COMMAND LISTENER ────────────────────────────────────────────────
 def telegram_poll():
-    """Long-poll Telegram API, xử lý lệnh /baocao."""
     offset = 0
     print("📩 Telegram command listener khởi động (/baocao)")
     while True:
@@ -268,8 +262,7 @@ def telegram_poll():
                 msg  = update.get("message", {})
                 text = (msg.get("text") or "").strip().lower()
                 if text.startswith("/baocao"):
-                    chat_id = msg.get("chat", {}).get("id")
-                    print(f"📩 Lệnh /baocao từ chat_id={chat_id}")
+                    print(f"📩 Lệnh /baocao từ chat_id={msg.get('chat', {}).get('id')}")
                     requests.post(
                         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                         json={"chat_id": TELEGRAM_CHAT_ID, "text": "⏳ Đang lấy dữ liệu, vui lòng chờ..."},
@@ -290,8 +283,6 @@ def run_report():
     p = browser = None
     try:
         p, browser, page = login_isolar()
-
-        # Lấy dữ liệu tất cả nhà máy từ 1 trang bảng
         rows = get_all_plant_data(page)
 
         results = []
@@ -327,8 +318,6 @@ if __name__ == "__main__":
     print("📩 Lệnh Telegram: /baocao")
 
     threading.Thread(target=telegram_poll, daemon=True).start()
-
-    # run_report()  # Test ngay
 
     schedule.every().day.at(REPORT_TIME).do(run_report)
 
