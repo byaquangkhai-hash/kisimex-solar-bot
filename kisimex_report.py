@@ -3,7 +3,7 @@ iSolarCloud KISIMEX Daily Report Bot
 - Tự động login web3.isolarcloud.com.hk bằng Playwright
 - Lấy dữ liệu từ BẢNG DANH SÁCH nhà máy (1 trang duy nhất)
 - Cột: "Yield today" (MWh → đổi ra kWh) + "Equivalent hours"
-- Gửi Telegram lúc 17:00 VN hàng ngày; hỗ trợ lệnh /baocao
+- Gửi Telegram lúc 18:20 VN hàng ngày; hỗ trợ lệnh /baocao
 
 Biến môi trường (Railway):
     ISOLAR_USER        - email đăng nhập iSolarCloud
@@ -25,7 +25,7 @@ ISOLAR_PASS      = os.environ["ISOLAR_PASS"]
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-REPORT_TIME = "11:00"   # 18:00 UTC+7 = 11:00 UTC
+REPORT_TIME = "11:20"   # 18:20 VN (UTC+7) = 11:20 UTC
 
 PLANTS = [
     {"name": "KHO BAO BÌ",    "capacity": 442.00},
@@ -219,7 +219,7 @@ def format_report(results: list) -> str:
         "━" * 23,
         f"Hệ thống  : KISIMEX - Kiên Giang",
         f"Ngày      : {thu}, {date_str}",
-        f"Cập nhật  : 17:00",
+        f"Cập nhật  : {now.strftime('%H:%M')}",
         "━" * 23,
     ]
 
@@ -234,12 +234,17 @@ def format_report(results: list) -> str:
         if kwh is not None:
             total_kwh += kwh
 
-        lines += [
+        block = [
             f"{emojis[i]} {plant['name']} ({cap:,.2f} kWp)",
             f"  ⚡ Sản lượng         : {prod_str}",
             f"  ☀️ Giờ tương đương  : {gio_str}",
-            "",
         ]
+        if gio is not None:
+            nhan_xet = ("Bức xạ trong ngày tốt, sản lượng đạt kỳ vọng." if gio > 3.5
+                        else "Bức xạ trong ngày kém, sản lượng không đạt kỳ vọng.")
+            block.append(f"  📝 {nhan_xet}")
+        block.append("")
+        lines += block
 
     lines += [
         "━" * 23,
@@ -329,7 +334,7 @@ def run_report():
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("🤖 KISIMEX Report Bot khởi động")
-    print(f"⏰ Lịch gửi: {REPORT_TIME} UTC (= 17:00 VN) mỗi ngày")
+    print(f"⏰ Lịch gửi: {REPORT_TIME} UTC (= 18:20 VN) mỗi ngày")
     print("📩 Lệnh Telegram: /baocao")
 
     threading.Thread(target=telegram_poll, daemon=True).start()
